@@ -16,41 +16,48 @@ export default function Home() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   useEffect(() => {
-    // Initialize Socket.IO connection
     socketRef.current = io(BACKEND_URL);
 
-    socketRef.current.on("connect", () => {
-      console.log("Connected to backend");
-    });
+    socketRef.current.on("connect", () => console.log("Connected to backend"));
 
-    // Listen for interruptions from the server
-    socketRef.current.on("interruption", (data: { audio: string }) => {
+    const handleInterruption = (data: { audio: string }) => {
       console.log("Interruption received!");
       setStatusMessage("Oops! Let's correct that.");
-
-      // Stop recording to prevent feedback loops
-      if (
-        mediaRecorderRef.current &&
-        mediaRecorderRef.current.state === "recording"
-      ) {
+      if (mediaRecorderRef.current?.state === "recording") {
         mediaRecorderRef.current.stop();
       }
-
-      // Play the corrective audio
       const audio = new Audio(`data:audio/mp3;base64,${data.audio}`);
       audio.play();
-
-      // After the correction is played, allow the user to resume
       audio.onended = () => {
         setStatusMessage("Ready to continue. Click 'Start Reading' again.");
-        setIsRecording(false); // Reset the button state
-        // Signal the backend that we are ready to resume
+        setIsRecording(false);
         socketRef.current?.emit("resume_reading");
       };
-    });
+    };
+
+    // --- NEW: LISTENER FOR TASK COMPLETION ---
+    const handleTaskComplete = (data: { audio: string }) => {
+      console.log("Task Complete message received!");
+      setStatusMessage("Fantastic! You did it!");
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      const audio = new Audio(`data:audio/mp3;base64,${data.audio}`);
+      audio.play();
+      audio.onended = () => {
+        setStatusMessage("Ready for another round? Click 'Start Reading'.");
+        setIsRecording(false);
+        // Signal the backend to reset everything for a new attempt
+        socketRef.current?.emit("resume_reading");
+      };
+    };
+
+    socketRef.current.on("interruption", handleInterruption);
+    socketRef.current.on("task_complete", handleTaskComplete); // Add the new listener
 
     return () => {
-      // Cleanup on component unmount
+      socketRef.current?.off("interruption", handleInterruption);
+      socketRef.current?.off("task_complete", handleTaskComplete); // Clean up the new listener
       socketRef.current?.disconnect();
     };
   }, []);
@@ -59,21 +66,15 @@ export default function Home() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorderRef.current = new MediaRecorder(stream);
-
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0 && socketRef.current) {
-          // Send audio chunk to the backend
           socketRef.current.emit("audio_stream", event.data);
         }
       };
-
       mediaRecorderRef.current.onstart = () => {
         setIsRecording(true);
         setStatusMessage("Listening... Please start reading.");
       };
-
-      // We stop and restart the recorder every 2 seconds to send manageable chunks
-      // The backend will buffer them.
       mediaRecorderRef.current.start(2000);
     } catch (error) {
       console.error("Error accessing microphone:", error);
@@ -82,10 +83,7 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    if (
-      mediaRecorderRef.current &&
-      mediaRecorderRef.current.state === "recording"
-    ) {
+    if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop();
     }
     setIsRecording(false);
